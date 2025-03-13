@@ -50,8 +50,14 @@ class RetinalDataset(Dataset):
             # Normalize masks to [0, 1]
             od_mask = od_mask / 255.0
             oc_mask = oc_mask / 255.0
-            # Stack masks along channel dimension (OD, OC)
-            mask = np.stack([od_mask, oc_mask], axis=-1)
+            
+            # Create 3-channel mask: Background, OD (without OC), OC
+            background_mask = 1.0 - np.maximum(od_mask, oc_mask)  # Background is where neither OD nor OC
+            od_only_mask = od_mask - oc_mask  # OD without OC
+            od_only_mask = np.clip(od_only_mask, 0, 1)  # Ensure values are in [0,1]
+            
+            # Stack masks: Background, OD-only, OC
+            mask = np.stack([background_mask, od_only_mask, oc_mask], axis=-1)
         
         # Apply transforms
         if self.transform:

@@ -9,6 +9,9 @@ from models import get_model
 from utils.loss import get_loss_function
 from utils.metrics import get_metrics
 from utils.data import create_dataloaders
+from tqdm import tqdm
+import time
+from datetime import timedelta
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Training script for segmentation')
@@ -66,7 +69,10 @@ def train_epoch(model, train_loader, criterion, optimizer, device, metrics):
     epoch_loss = 0
     metric_values = {name: 0.0 for name in metrics.keys()}
     
-    for batch_idx, (data, target) in enumerate(train_loader):
+    # Add tqdm progress bar
+    pbar = tqdm(train_loader, desc="Training", leave=False)
+    
+    for batch_idx, (data, target) in enumerate(pbar):
         data, target = data.to(device), target.to(device)
         
         optimizer.zero_grad()
@@ -79,8 +85,14 @@ def train_epoch(model, train_loader, criterion, optimizer, device, metrics):
         
         # Calculate metrics
         with torch.no_grad():
+            batch_metrics = {}
             for name, metric_fn in metrics.items():
-                metric_values[name] += metric_fn(output, target).item()
+                value = metric_fn(output, target).item()
+                metric_values[name] += value
+                batch_metrics[name] = value
+        
+        # Update progress bar with current metrics
+        pbar.set_postfix(loss=f"{loss.item():.4f}", **{k: f"{v:.4f}" for k, v in batch_metrics.items()})
     
     # Average over batches
     num_batches = len(train_loader)
@@ -96,15 +108,25 @@ def validate(model, val_loader, criterion, device, metrics):
     val_loss = 0
     metric_values = {name: 0.0 for name in metrics.keys()}
     
+    # Add tqdm progress bar
+    pbar = tqdm(val_loader, desc="Validating", leave=False)
+    
     with torch.no_grad():
-        for data, target in val_loader:
+        for data, target in pbar:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            val_loss += criterion(output, target).item()
+            batch_loss = criterion(output, target).item()
+            val_loss += batch_loss
             
             # Calculate metrics
+            batch_metrics = {}
             for name, metric_fn in metrics.items():
-                metric_values[name] += metric_fn(output, target).item()
+                value = metric_fn(output, target).item()
+                metric_values[name] += value
+                batch_metrics[name] = value
+            
+            # Update progress bar with current metrics
+            pbar.set_postfix(loss=f"{batch_loss:.4f}", **{k: f"{v:.4f}" for k, v in batch_metrics.items()})
     
     # Average over batches
     num_batches = len(val_loader)
@@ -138,7 +160,7 @@ def main():
     
     # Set up model
     if args.task == 'odoc':
-        n_classes = 2  # OD and OC
+        n_classes = 3  # Background, OD and OC
     else:  # vessel
         n_classes = 1
     
@@ -173,7 +195,17 @@ def main():
     
     # Training loop
     best_val_loss = float('inf')
+    start_time = time.time()
+    
+    print("\n" + "="*80)
+    print(f"Starting training: {args.dataset}_{args.task} with {args.model} model")
+    print(f"Training for {args.epochs} epochs with {args.optimizer} optimizer (lr={args.lr})")
+    print(f"Loss function: {args.loss}, Metrics: {', '.join(args.metrics)}")
+    print("="*80 + "\n")
+    
     for epoch in range(args.epochs):
+        epoch_start = time.time()
+        
         # Train
         train_loss, train_metrics = train_epoch(
             model, train_loader, criterion, optimizer, device, metrics
@@ -188,14 +220,30 @@ def main():
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), output_dir / 'best_model.pth')
+            saved_text = "✓ Saved new best model"
+        else:
+            saved_text = ""
         
-        # Log metrics
-        print(f'Epoch {epoch+1}/{args.epochs}:')
-        print(f'Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
+        # Calculate epoch time and estimate remaining time
+        epoch_time = time.time() - epoch_start
+        elapsed = time.time() - start_time
+        estimated_total = (epoch_time * args.epochs) / (epoch + 1)
+        estimated_remaining = estimated_total - elapsed
+        
+        # Log metrics with pretty formatting
+        print(f"\n----- Epoch {epoch+1}/{args.epochs} | Time: {timedelta(seconds=int(epoch_time))} -----")
+        print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} {saved_text}")
+        
+        # Print metrics in a table format
+        print("\n{:<10} {:<15} {:<15}".format("Metric", "Train", "Validation"))
+        print("-" * 40)
         for name in metrics:
-            print(f'Train {name}: {train_metrics[name]:.4f}, '
-                  f'Val {name}: {val_metrics[name]:.4f}')
-        print('-' * 50)
+            print("{:<10} {:<15.4f} {:<15.4f}".format(
+                name, train_metrics[name], val_metrics[name]))
+        
+        # Print time information
+        print(f"\nElapsed: {timedelta(seconds=int(elapsed))}, "
+              f"Remaining: {timedelta(seconds=int(estimated_remaining))}\n")
         
         # Save checkpoint
         torch.save({

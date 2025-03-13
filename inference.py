@@ -7,6 +7,8 @@ import cv2
 from models import get_model
 from utils.metrics import get_metrics
 import os
+from tqdm import tqdm
+from datetime import datetime
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Inference script for segmentation')
@@ -71,13 +73,15 @@ def postprocess_prediction(pred: torch.Tensor, task: str = 'vessel') -> np.ndarr
         pred = pred.squeeze().cpu().numpy()
         return (pred * 255).astype(np.uint8)
     else:
-        # Treat each class as independent binary segmentation
-        od_prob = torch.sigmoid(pred[:, 0]).squeeze().cpu().numpy()
-        oc_prob = torch.sigmoid(pred[:, 1]).squeeze().cpu().numpy()
+        # Multi-class segmentation with background, OD, OC
+        pred_probs = torch.softmax(pred, dim=1).squeeze().cpu().numpy()
         
-        # Try a very low threshold
-        od_mask = (od_prob > 0.1).astype(np.uint8) * 255
-        oc_mask = (oc_prob > 0.1).astype(np.uint8) * 255
+        # Get class with highest probability for each pixel
+        pred_classes = np.argmax(pred_probs, axis=0)
+        
+        # Extract OD mask (class 1) and OC mask (class 2)
+        od_mask = ((pred_classes == 1) | (pred_classes == 2)).astype(np.uint8) * 255  # OD includes OC
+        oc_mask = (pred_classes == 2).astype(np.uint8) * 255
         
         return {
             'OD': od_mask,
@@ -114,26 +118,39 @@ def create_overlay(image: np.ndarray, mask: np.ndarray, alpha: float = 0.5, task
         od_mask = mask['OD']
         oc_mask = mask['OC']
         
-        # Resize masks if needed
-        if image.shape[:2] != od_mask.shape[:2]:
-            od_mask = cv2.resize(od_mask, (image.shape[1], image.shape[0]))
-            oc_mask = cv2.resize(oc_mask, (image.shape[1], image.shape[0]))
+        # Create background mask (where neither OD nor OC)
+        background_mask = 255 - np.maximum(od_mask, oc_mask)
         
-        # Create colored mask for OD (blue) and OC (yellow)
+        # Create colored visualization:
+        overlay = image.copy()
+        
+        # Apply colors with proper precedence
+        # First OD (exclude OC area)
+        od_only = od_mask.copy()
+        od_only[oc_mask > 0] = 0  # Remove OC area from OD
         od_colored = np.zeros_like(image)
-        od_colored[od_mask > 0] = [255, 0, 0]  # Blue for OD
+        od_colored[od_only > 0] = [255, 0, 0]  # Blue for OD
+        overlay = cv2.addWeighted(overlay, 1-alpha, od_colored, alpha, 0)
         
+        # Then OC on top
         oc_colored = np.zeros_like(image)
         oc_colored[oc_mask > 0] = [0, 255, 255]  # Yellow for OC
-        
-        # Add both masks to the image
-        overlay = cv2.addWeighted(image, 1-alpha, od_colored, alpha, 0)
         overlay = cv2.addWeighted(overlay, 1, oc_colored, alpha, 0)
         
     return overlay
 
 def main():
     args = parse_args()
+    
+    # Start timestamp
+    start_time = datetime.now()
+    
+    # Print header
+    print("\n" + "="*80)
+    print(f"Running inference for {args.task} segmentation on {args.dataset} dataset")
+    print(f"Model: {args.model} | Input size: {args.img_size}x{args.img_size}")
+    print(f"Using device: {args.device}")
+    print("="*80 + "\n")
     
     # Construct data directory path
     data_dir = Path('data') / args.dataset
@@ -148,8 +165,9 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Set up model
+    print(f"Loading model weights from {args.model_weights}...")
     if args.task == 'odoc':
-        n_classes = 2
+        n_classes = 3  # Background, OD, and OC - match training configuration
     else:  # vessel
         n_classes = 1
     
@@ -170,10 +188,13 @@ def main():
     
     print(f"Found {len(image_paths)} images to process")
     
-    # Process each image
+    # Process each image with tqdm progress bar
     with torch.no_grad():
-        for image_path in image_paths:
-            print(f"Processing {image_path.name}...")
+        # Create progress bar
+        pbar = tqdm(image_paths, desc="Processing images", unit="image")
+        
+        for image_path in pbar:
+            pbar.set_description(f"Processing {image_path.name}")
             
             # Preprocess image
             image = preprocess_image(image_path, args.img_size)
@@ -211,19 +232,41 @@ def main():
                     gt = torch.from_numpy(gt).float() / 255.0
                     gt = gt.to(args.device)
                     
+                    # Calculate metrics
+                    batch_metrics = {}
                     for name, metric_fn in metrics.items():
                         value = metric_fn(pred, gt.unsqueeze(0).unsqueeze(0))
                         metric_values[name].append(value.item())
+                        batch_metrics[name] = value.item()
+                    
+                    # Update progress bar with current metrics
+                    pbar.set_postfix(**{k: f"{v:.4f}" for k, v in batch_metrics.items()})
     
-    # Print evaluation results
+    # Print evaluation results in a nice table format
     if metrics:
-        print("\nEvaluation Results:")
+        print("\n" + "-"*40)
+        print("Evaluation Results:")
+        print("-"*40)
+        print(f"{'Metric':<15} {'Mean':<10} {'Std Dev':<10}")
+        print("-"*40)
+        
         for name, values in metric_values.items():
             mean_value = np.mean(values)
             std_value = np.std(values)
-            print(f"{name}: {mean_value:.4f} ± {std_value:.4f}")
+            print(f"{name:<15} {mean_value:.4f}     ±{std_value:.4f}")
+        
+        print("-"*40)
     
-    print(f"\nPredictions saved to {output_dir}")
+    # Print summary
+    end_time = datetime.now()
+    duration = end_time - start_time
+    
+    print("\n" + "="*80)
+    print(f"Processed {len(image_paths)} images in {duration}")
+    print(f"Predictions saved to: {output_dir}")
+    if args.save_overlay:
+        print(f"Overlays saved to: {output_dir}")
+    print("="*80)
 
 if __name__ == '__main__':
     main()

@@ -1,7 +1,9 @@
 from .unet import UNet
+from .CSNet import CSNet
 
 _model_registry = {
     'unet': UNet,
+    'csnet': CSNet,
 }
 
 def get_model(model_name: str, **kwargs):
