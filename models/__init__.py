@@ -1,24 +1,40 @@
+"""
+Model registry for the segmentation benchmark.
+"""
 from .unet import UNet
 from .CSNet import CSNet
+from .base_model import BaseModel
 
-_model_registry = {
+# Add all available models here
+__all__ = [
+    'BaseModel',
+    'CSNet',
+    'UNet'
+]
+
+# Model registry - maps model names to classes
+MODEL_REGISTRY = {
     'unet': UNet,
     'csnet': CSNet,
+    # Add other models here
 }
 
-def get_model(model_name: str, **kwargs):
+def get_model(model_name):
     """
-    Factory function to get the specified model
-    Args:
-        model_name: Name of the model to use
-        **kwargs: Model specific arguments
-    Returns:
-        Model instance
-    """
-    if model_name not in _model_registry:
-        raise ValueError(f"Model {model_name} not found. Available models: {list(_model_registry.keys())}")
+    Get model class by name
     
-    return _model_registry[model_name](**kwargs)
+    Args:
+        model_name: Name of the model (case insensitive)
+        
+    Returns:
+        Model class
+    """
+    model_name = model_name.lower()
+    if model_name not in MODEL_REGISTRY:
+        raise ValueError(f"Model {model_name} not found in registry. Available models: {list(MODEL_REGISTRY.keys())}")
+    
+    # Return the model class, not an instance
+    return MODEL_REGISTRY[model_name]
 
 def register_model(name: str, model_class):
     """
@@ -27,4 +43,4 @@ def register_model(name: str, model_class):
         name: Name of the model
         model_class: Model class to register
     """
-    _model_registry[name] = model_class
+    MODEL_REGISTRY[name] = model_class

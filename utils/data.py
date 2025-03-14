@@ -6,11 +6,13 @@ from typing import Dict, List, Tuple
 from pathlib import Path
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+from PIL import Image
+import torchvision.transforms as transforms 
 
 class RetinalDataset(Dataset):
     """Dataset for retinal image segmentation (vessel or ODOC)"""
     def __init__(self, data_dir: str, task: str = 'vessel', img_size: int = 512, 
-                 transform=None, mode: str = 'train'):
+                 transform=None, mode: str = 'train', ordinal: bool = False):
         """
         Args:
             data_dir: Path to dataset directory
@@ -18,12 +20,14 @@ class RetinalDataset(Dataset):
             img_size: Input image size
             transform: Albumentations transforms to apply
             mode: 'train' or 'val'
+            ordinal: Whether to use ordinal approach for ODOC segmentation
         """
         self.data_dir = Path(data_dir)
         self.task = task
         self.img_size = img_size
         self.transform = transform
         self.mode = mode
+        self.ordinal = ordinal
         
         # Get data paths
         self.data = self._get_data()
@@ -44,20 +48,18 @@ class RetinalDataset(Dataset):
             # Normalize mask to [0, 1]
             mask = mask / 255.0
             mask = np.expand_dims(mask, axis=-1)  # Add channel dimension
-        else:  # odoc task
-            od_mask = cv2.imread(data_item["od_mask"], cv2.IMREAD_GRAYSCALE)
-            oc_mask = cv2.imread(data_item["oc_mask"], cv2.IMREAD_GRAYSCALE)
-            # Normalize masks to [0, 1]
-            od_mask = od_mask / 255.0
-            oc_mask = oc_mask / 255.0
             
-            # Create 3-channel mask: Background, OD (without OC), OC
-            background_mask = 1.0 - np.maximum(od_mask, oc_mask)  # Background is where neither OD nor OC
-            od_only_mask = od_mask - oc_mask  # OD without OC
-            od_only_mask = np.clip(od_only_mask, 0, 1)  # Ensure values are in [0,1]
+        elif self.task == "odoc":
+            # Always load as ordinal mask for ODOC task
+            mask = cv2.imread(data_item["mask"], cv2.IMREAD_GRAYSCALE)
             
-            # Stack masks: Background, OD-only, OC
-            mask = np.stack([background_mask, od_only_mask, oc_mask], axis=-1)
+            # Convert ordinal values to float [0, 1]
+            # 255 (white/background) -> 0.0
+            # 128 (grey/OD) -> 0.5
+            # 0 (black/OC) -> 1.0
+            mask = mask.astype(float)
+            mask = (255 - mask) / 255.0
+            mask = np.expand_dims(mask, axis=-1)  # Add channel dimension
         
         # Apply transforms
         if self.transform:
@@ -104,44 +106,32 @@ class RetinalDataset(Dataset):
                         })
                         mask_found = True
                         break
-
-        else:  # odoc task
-            od_masks_path = self.data_dir / "masks" / "OD"
-            oc_masks_path = self.data_dir / "masks" / "OC"
-
-            if not od_masks_path.exists() or not oc_masks_path.exists():
-                raise ValueError(f"OD or OC masks directory not found in {self.data_dir}/masks")
-
+                        
+        elif self.task == "odoc":
+            # ODOC is always treated as ordinal now
+            # Look for combined ordinal masks in masks/odoc directory
+            masks_path = self.data_dir / "masks" / "odoc"
+            
+            if not masks_path.exists():
+                raise ValueError(f"Ordinal masks directory not found in {self.data_dir}/masks/odoc")
+                
             for img_path in image_files:
-                od_found = oc_found = False
-                # Try different extensions for OD mask
+                # Try different mask extensions
                 for ext in [".png", ".jpg", ".jpeg"]:
-                    od_mask_path = od_masks_path / f"{img_path.stem}_mask{ext}"
-                    if not od_mask_path.exists():
-                        od_mask_path = od_masks_path / f"{img_path.stem}{ext}"
-                    if od_mask_path.exists():
-                        od_found = True
+                    mask_path = masks_path / f"{img_path.stem}{ext}"
+                    if not mask_path.exists():
+                        # Try with _ordinal suffix
+                        mask_path = masks_path / f"{img_path.stem}_ordinal{ext}"
+                    if mask_path.exists():
+                        data.append({
+                            "image": str(img_path),
+                            "mask": str(mask_path),
+                            "dataset": self.data_dir.name
+                        })
                         break
-                
-                # Try different extensions for OC mask
-                for ext in [".png", ".jpg", ".jpeg"]:
-                    oc_mask_path = oc_masks_path / f"{img_path.stem}_mask{ext}"
-                    if not oc_mask_path.exists():
-                        oc_mask_path = oc_masks_path / f"{img_path.stem}{ext}"
-                    if oc_mask_path.exists():
-                        oc_found = True
-                        break
-                
-                if od_found and oc_found:
-                    data.append({
-                        "image": str(img_path),
-                        "od_mask": str(od_mask_path),
-                        "oc_mask": str(oc_mask_path),
-                        "dataset": self.data_dir.name
-                    })
 
         if not data:
-            raise ValueError(f"No valid image-mask pairs found in {self.data_dir}")
+            raise ValueError(f"No valid image-mask pairs found in {self.data_dir} for task {self.task}")
 
         print(f"Found {len(data)} valid image-mask pairs in {self.data_dir}")
         return data
@@ -161,11 +151,10 @@ def get_transforms(img_size, mode="train"):
             A.Resize(img_size, img_size),
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
-            # Replace ShiftScaleRotate with Affine
             A.Affine(
-                translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},  # equivalent to shift_limit
-                scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)},               # equivalent to scale_limit
-                rotate=(-15, 15),                                       # equivalent to rotate_limit
+                translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
+                scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)},
+                rotate=(-15, 15),
                 p=0.5
             ),
             A.OneOf([
@@ -188,28 +177,18 @@ def get_transforms(img_size, mode="train"):
         ])
 
 
-def create_dataloaders(data_dir, task, img_size, batch_size, train_split=0.8, num_workers=4):
-    """
-    Create train and validation dataloaders
-    Args:
-        data_dir: Path to dataset directory
-        task: 'vessel' or 'odoc'
-        img_size: Input image size
-        batch_size: Batch size
-        train_split: Train/val split ratio
-        num_workers: Number of workers for data loading
-    Returns:
-        Train and validation dataloaders
-    """
+def create_dataloaders(data_dir, task, img_size, batch_size, split_ratio=0.8, num_workers=4, ordinal=None):
+    """Create train and validation dataloaders"""
+    
     # Get transforms
     train_transform = get_transforms(img_size, mode="train")
     val_transform = get_transforms(img_size, mode="val")
     
-    # Create dataset
+    # Create dataset - ordinal param is ignored, since ODOC is always ordinal now
     dataset = RetinalDataset(data_dir, task, img_size, transform=None)
     
     # Split dataset
-    num_train = int(len(dataset) * train_split)
+    num_train = int(len(dataset) * split_ratio)
     num_val = len(dataset) - num_train
     
     # Use random_split to split the dataset
@@ -239,9 +218,47 @@ def create_dataloaders(data_dir, task, img_size, batch_size, train_split=0.8, nu
         pin_memory=True
     )
     
+    # Pretty print dataset information with formatting
+    print("\n" + "="*40)
     print(f"Dataset: {Path(data_dir).name}")
+    print(f"Task: {task}" + (" (Ordinal)" if task == 'odoc' else ""))
     print(f"Total samples: {len(dataset)}")
     print(f"Training samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
+    print("="*40 + "\n")
     
     return train_loader, val_loader
+
+
+class GreenCLAHEExtractor(object):
+    """Extract the green channel and apply CLAHE"""
+    
+    def __init__(self, clip_limit=2.0, tile_grid_size=(8, 8)):
+        self.clip_limit = clip_limit
+        self.tile_grid_size = tile_grid_size
+        self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    
+    def __call__(self, img):
+        """
+        Args:
+            img: PIL Image or numpy array
+        Returns:
+            Single-channel PIL Image with CLAHE applied to the green channel
+        """
+        # Convert PIL Image to numpy array if needed
+        if isinstance(img, Image.Image):
+            img_np = np.array(img)
+        else:
+            img_np = img
+            
+        # Extract green channel (index 1 in RGB)
+        green_channel = img_np[:, :, 1]
+        
+        # Apply CLAHE to green channel
+        enhanced_green = self.clahe.apply(green_channel)
+        
+        # Convert back to PIL Image (single channel)
+        return Image.fromarray(enhanced_green)
+    
+    def __repr__(self):
+        return self.__class__.__name__ + f'(clip_limit={self.clip_limit}, tile_grid_size={self.tile_grid_size})'

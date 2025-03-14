@@ -12,6 +12,10 @@ from utils.data import create_dataloaders
 from tqdm import tqdm
 import time
 from datetime import timedelta
+import numpy as np
+from PIL import Image
+
+torch.autograd.set_detect_anomaly(True)
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Training script for segmentation')
@@ -61,13 +65,21 @@ def parse_args():
     parser.add_argument('--exp_name', type=str, default=None,
                       help='Experiment name for logging')
     
+    # Add this line to your parser arguments
+    parser.add_argument('--debug', action='store_true',
+                      help='Enable anomaly detection for debugging')
+    
     return parser.parse_args()
 
-def train_epoch(model, train_loader, criterion, optimizer, device, metrics):
+def train_epoch(model, train_loader, criterion, optimizer, device, metrics, args=None, epoch=None):
     """Train for one epoch"""
     model.train()
     epoch_loss = 0
     metric_values = {name: 0.0 for name in metrics.keys()}
+    
+    # Create visualization directory if it doesn't exist
+    vis_dir = Path("visualise/epoch")
+    vis_dir.mkdir(parents=True, exist_ok=True)
     
     # Add tqdm progress bar
     pbar = tqdm(train_loader, desc="Training", leave=False)
@@ -77,7 +89,41 @@ def train_epoch(model, train_loader, criterion, optimizer, device, metrics):
         
         optimizer.zero_grad()
         output = model(data)
+
+
+        #================================================================================================
+        # only needed for visualization of same image from each batch
+        # (works only with batch=1 and will not save the exact same image for every batch. NEEDS FIXING)
+        #================================================================================================
+        
+        # # Save a visualization copy without modifying the original output tensor
+        # if batch_idx == 0 and epoch is not None:  # Only save the first batch
+        #     # Create a copy for visualization
+        #     vis_output = output.clone().cpu().detach()
+            
+        #     # Make sure we're working with the first image in the batch
+        #     if vis_output.shape[0] > 0:
+        #         vis_single = vis_output[0]  # Get first image in batch
+                
+        #         # Convert to numpy for visualization
+        #         if vis_single.shape[0] == 1:  # Single channel output (vessel)
+        #             # Apply sigmoid if needed
+        #             if vis_single.min() < 0 or vis_single.max() > 1:
+        #                 vis_np = torch.sigmoid(vis_single).numpy()
+        #             else:
+        #                 vis_np = vis_single.numpy()
+                    
+        #             # Convert to 8-bit image
+        #             vis_np = (vis_np[0] * 255).astype(np.uint8)
+                    
+        #             # Save using PIL - include epoch number in filename
+        #             img = Image.fromarray(vis_np)
+        #             img.save(f"{vis_dir}/output_epoch_{epoch:03d}.png")
+
+        # Use the original output for loss calculation and backprop
+        
         loss = criterion(output, target)
+
         loss.backward()
         optimizer.step()
         
@@ -87,9 +133,18 @@ def train_epoch(model, train_loader, criterion, optimizer, device, metrics):
         with torch.no_grad():
             batch_metrics = {}
             for name, metric_fn in metrics.items():
+                # We pass raw outputs to metrics functions, which will handle activation 
+                # internally in their _align_dimensions method
                 value = metric_fn(output, target).item()
                 metric_values[name] += value
                 batch_metrics[name] = value
+        
+        # Add this inside train_epoch function to debug metrics
+        if args and args.debug and batch_idx == 0:  # Only check first batch
+            from utils.metrics import SegmentationMetrics
+            print("\n----- Metrics Debug Information -----")
+            SegmentationMetrics.debug_metrics(output.detach(), target)
+            print("-------------------------------------\n")
         
         # Update progress bar with current metrics
         pbar.set_postfix(loss=f"{loss.item():.4f}", **{k: f"{v:.4f}" for k, v in batch_metrics.items()})
@@ -102,7 +157,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, metrics):
     
     return epoch_loss, metric_values
 
-def validate(model, val_loader, criterion, device, metrics):
+def validate(model, val_loader, criterion, device, metrics, args=None):
     """Validate the model"""
     model.eval()
     val_loss = 0
@@ -112,7 +167,7 @@ def validate(model, val_loader, criterion, device, metrics):
     pbar = tqdm(val_loader, desc="Validating", leave=False)
     
     with torch.no_grad():
-        for data, target in pbar:
+        for batch_idx, (data, target) in enumerate(pbar):
             data, target = data.to(device), target.to(device)
             output = model(data)
             batch_loss = criterion(output, target).item()
@@ -124,6 +179,13 @@ def validate(model, val_loader, criterion, device, metrics):
                 value = metric_fn(output, target).item()
                 metric_values[name] += value
                 batch_metrics[name] = value
+            
+            # Add debug for validation as well
+            if args and args.debug and batch_idx == 0:  # Only check first batch
+                from utils.metrics import SegmentationMetrics
+                print("\n----- Validation Metrics Debug Information -----")
+                SegmentationMetrics.debug_metrics(output.detach(), target)
+                print("-------------------------------------\n")
             
             # Update progress bar with current metrics
             pbar.set_postfix(loss=f"{batch_loss:.4f}", **{k: f"{v:.4f}" for k, v in batch_metrics.items()})
@@ -138,6 +200,11 @@ def validate(model, val_loader, criterion, device, metrics):
 
 def main():
     args = parse_args()
+    
+    # Enable anomaly detection for debugging
+    if args.debug:
+        torch.autograd.set_detect_anomaly(True)
+        print("Anomaly detection enabled.")
     
     # Set specific GPU if requested
     if args.device == 'cuda':
@@ -164,7 +231,9 @@ def main():
     else:  # vessel
         n_classes = 1
     
-    model = get_model(args.model, n_classes=n_classes)
+    # Get the model class and then instantiate it
+    model_class = get_model(args.model)
+    model = model_class(n_channels=3, n_classes=n_classes)
     
     if args.pretrained:
         model.load_state_dict(torch.load(args.pretrained))
@@ -208,12 +277,12 @@ def main():
         
         # Train
         train_loss, train_metrics = train_epoch(
-            model, train_loader, criterion, optimizer, device, metrics
+            model, train_loader, criterion, optimizer, device, metrics, args, epoch
         )
         
         # Validate
         val_loss, val_metrics = validate(
-            model, val_loader, criterion, device, metrics
+            model, val_loader, criterion, device, metrics, args
         )
         
         # Save best model

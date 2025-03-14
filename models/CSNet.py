@@ -1,10 +1,12 @@
 """
 Channel and Spatial CSNet Network (CS-Net).
+Enhanced to work with the segmentation benchmark framework.
 """
-from __future__ import division
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import cv2
+import numpy as np
 from .base_model import BaseModel
 
 
@@ -23,15 +25,15 @@ class ResEncoder(nn.Module):
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=False)
+        self.relu = nn.ReLU(inplace=False)  # Must be inplace=False
         self.conv1x1 = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
         residual = self.conv1x1(x)
         out = self.relu(self.bn1(self.conv1(x)))
         out = self.relu(self.bn2(self.conv2(out)))
-        # Use regular addition instead of in-place to avoid gradient issues
-        out = out + residual
+        # Replace inplace addition with torch.add
+        out = torch.add(out, residual)
         out = self.relu(out)
         return out
 
@@ -40,12 +42,12 @@ class Decoder(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Decoder, self).__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=False),  # Must be inplace=False
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=False)   # Must be inplace=False
         )
 
     def forward(self, x):
@@ -57,14 +59,14 @@ class SpatialAttentionBlock(nn.Module):
     def __init__(self, in_channels):
         super(SpatialAttentionBlock, self).__init__()
         self.query = nn.Sequential(
-            nn.Conv2d(in_channels,in_channels//8,kernel_size=(1,3), padding=(0,1)),
+            nn.Conv2d(in_channels, in_channels//8, kernel_size=(1,3), padding=(0,1)),
             nn.BatchNorm2d(in_channels//8),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=False)  # Must be inplace=False
         )
         self.key = nn.Sequential(
             nn.Conv2d(in_channels, in_channels//8, kernel_size=(3,1), padding=(1,0)),
             nn.BatchNorm2d(in_channels//8),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=False)  # Must be inplace=False
         )
         self.value = nn.Conv2d(in_channels, in_channels, kernel_size=1)
         self.gamma = nn.Parameter(torch.zeros(1))
@@ -84,7 +86,8 @@ class SpatialAttentionBlock(nn.Module):
         proj_value = self.value(x).view(B, -1, H * W)
         weights = torch.matmul(proj_value, affinity.permute(0, 2, 1))
         weights = weights.view(B, C, H, W)
-        out = self.gamma * weights + x
+        # Replace inplace addition with torch.add
+        out = torch.add(self.gamma * weights, x)
         return out
 
 
@@ -108,7 +111,8 @@ class ChannelAttentionBlock(nn.Module):
         proj_value = x.view(B, C, -1)
         weights = torch.matmul(affinity_new, proj_value)
         weights = weights.view(B, C, H, W)
-        out = self.gamma * weights + x
+        # Replace inplace addition with torch.add
+        out = torch.add(self.gamma * weights, x)
         return out
 
 
@@ -119,7 +123,6 @@ class AffinityAttention(nn.Module):
         super(AffinityAttention, self).__init__()
         self.sab = SpatialAttentionBlock(in_channels)
         self.cab = ChannelAttentionBlock(in_channels)
-        # self.conv1x1 = nn.Conv2d(in_channels * 2, in_channels, kernel_size=1)
 
     def forward(self, x):
         """
@@ -130,25 +133,40 @@ class AffinityAttention(nn.Module):
         """
         sab = self.sab(x)
         cab = self.cab(x)
-        out = sab + cab
+        # Replace inplace addition with torch.add
+        out = torch.add(sab, cab)
         return out
 
 
 class CSNet(BaseModel):
+    """
+    CSNet implementation that is compatible with the segmentation benchmark framework.
+    Processes the green channel with CLAHE enhancement.
+    """
     def __init__(self, n_channels=3, n_classes=1):
         """
-        :param n_channels: the channels of the input image.
-        :param n_classes: the object classes number.
+        Args:
+            n_channels: Number of input image channels (RGB=3)
+            n_classes: Number of output segmentation classes
         """
         super(CSNet, self).__init__()
-        self.enc_input = ResEncoder(n_channels, 32)
+        
+        # Store configuration
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        channels = 1  # Always use 1 channel for green channel extraction
+        
+        # CLAHE preprocessor
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        
+        # Network architecture
+        self.enc_input = ResEncoder(channels, 32)
         self.encoder1 = ResEncoder(32, 64)
         self.encoder2 = ResEncoder(64, 128)
         self.encoder3 = ResEncoder(128, 256)
         self.encoder4 = ResEncoder(256, 512)
         self.downsample = downsample()
         self.affinity_attention = AffinityAttention(512)
-        self.attention_fuse = nn.Conv2d(512 * 2, 512, kernel_size=1)
         self.decoder4 = Decoder(512, 256)
         self.decoder3 = Decoder(256, 128)
         self.decoder2 = Decoder(128, 64)
@@ -158,9 +176,74 @@ class CSNet(BaseModel):
         self.deconv2 = deconv(128, 64)
         self.deconv1 = deconv(64, 32)
         self.final = nn.Conv2d(32, n_classes, kernel_size=1)
-        self.apply(self.init_weights)  # Use BaseModel's init_weights method
+        
+        # Initialize weights
+        self._initialize_weights()
+    
+    def preprocess_input(self, x, debug=False):
+        """
+        Extract green channel and apply CLAHE
+        Args:
+            x: Input tensor [B, C, H, W]
+            debug: Print debug information
+        Returns:
+            Preprocessed tensor [B, 1, H, W] with green channel and CLAHE
+        """
+        batch_size, channels, height, width = x.shape
+        device = x.device
+        
+        if debug:
+            print(f"Input shape: {x.shape}, min: {x.min().item()}, max: {x.max().item()}")
+        
+        # Process each image in the batch
+        processed = []
+        for i in range(batch_size):
+            # Get the green channel (index 1) from the RGB input
+            green = x[i, 1, :, :].detach().cpu().numpy()
+            
+            if debug:
+                print(f"Green channel: shape={green.shape}, min={green.min()}, max={green.max()}")
+            
+            # Scale to 0-255 for CLAHE
+            green_scaled = (green * 255).astype(np.uint8)
+            
+            try:
+                # Apply CLAHE
+                clahe_green = self.clahe.apply(green_scaled)
+                
+                if debug:
+                    print(f"After CLAHE: min={clahe_green.min()}, max={clahe_green.max()}")
+                
+                # Convert back to tensor and normalize to [0, 1]
+                clahe_green_tensor = torch.from_numpy(clahe_green).float() / 255.0
+                
+                # Add to batch list
+                processed.append(clahe_green_tensor.unsqueeze(0))  # Add channel dimension
+            except Exception as e:
+                print(f"Error in CLAHE processing: {e}")
+                # Fallback to original green channel if CLAHE fails
+                processed.append(x[i, 1:2, :, :].detach().clone())
+        
+        # Stack the processed images back into a batch
+        result = torch.stack(processed, dim=0).to(device)
+        
+        if debug:
+            print(f"Output shape: {result.shape}, min: {result.min().item()}, max: {result.max().item()}")
+        
+        return result
 
     def forward(self, x):
+        """
+        Forward pass
+        Args:
+            x: Input tensor of shape [B, C, H, W]
+        Returns:
+            Output tensor of shape [B, n_classes, H, W]
+        """
+        # Preprocess input: extract green channel and apply CLAHE
+        x = self.preprocess_input(x)
+        
+        # Encoder path
         enc_input = self.enc_input(x)
         down1 = self.downsample(enc_input)
 
@@ -175,14 +258,14 @@ class CSNet(BaseModel):
 
         input_feature = self.encoder4(down4)
 
-        # Do Attenttion operations here
+        # Attention mechanism
         attention = self.affinity_attention(input_feature)
+        # Replace inplace addition with torch.add
+        attention_fuse = torch.add(input_feature, attention)
 
-        # attention_fuse = self.attention_fuse(torch.cat((input_feature, attention), dim=1))
-        attention_fuse = input_feature + attention
-
-        # Do decoder operations here
+        # Decoder path
         up4 = self.deconv4(attention_fuse)
+        # Use torch.cat which is not inplace
         up4 = torch.cat((enc3, up4), dim=1)
         dec4 = self.decoder4(up4)
 
@@ -198,8 +281,13 @@ class CSNet(BaseModel):
         up1 = torch.cat((enc_input, up1), dim=1)
         dec1 = self.decoder1(up1)
 
+        # Final output layer
         final = self.final(dec1)
-        # Return logits without sigmoid for training compatibility
+        
+        # Apply sigmoid if the output is single channel
+        if self.n_classes == 1:
+            final = torch.sigmoid(final)
+        
         return final
 
     @staticmethod

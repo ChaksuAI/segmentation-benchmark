@@ -43,6 +43,10 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                       help='Device to use for inference')
     
+    # Add debug parameter
+    parser.add_argument('--debug', action='store_true',
+                      help='Enable debug output')
+    
     return parser.parse_args()
 
 def preprocess_image(image_path: str, target_size: int) -> torch.Tensor:
@@ -67,9 +71,17 @@ def preprocess_image(image_path: str, target_size: int) -> torch.Tensor:
 def postprocess_prediction(pred: torch.Tensor, task: str = 'vessel') -> np.ndarray:
     """Binary threshold postprocessing"""
     if task == 'vessel':
-        # Binary segmentation
-        pred = torch.sigmoid(pred)
-        pred = (pred > 0.5).float()
+        # Check if prediction already has sigmoid applied
+        # (CSNet applies sigmoid in its forward method)
+        if pred.min() >= 0 and pred.max() <= 1:
+            # Sigmoid already applied, use as is
+            pred_prob = pred
+        else:
+            # Need to apply sigmoid
+            pred_prob = torch.sigmoid(pred)
+        
+        # Binary thresholding with a lower threshold (0.2) to capture more vessels
+        pred = (pred_prob > 0.2).float()
         pred = pred.squeeze().cpu().numpy()
         return (pred * 255).astype(np.uint8)
     else:
@@ -171,8 +183,21 @@ def main():
     else:  # vessel
         n_classes = 1
     
-    model = get_model(args.model, n_classes=n_classes)
-    model.load_state_dict(torch.load(args.model_weights, map_location=args.device))
+    # Get the model class first, then instantiate it with parameters
+    model_class = get_model(args.model)
+    
+    # Important change: Use n_channels=3 for CSNet to match the trained model's input channels
+    if args.model.lower() == 'csnet':
+        n_channels = 3
+    else:
+        n_channels = 3
+    
+    model = model_class(n_channels=n_channels, n_classes=n_classes)
+    
+    # Load the model weights with strict=False to ignore the attention_fuse parameters
+    state_dict = torch.load(args.model_weights, map_location=args.device)
+    model.load_state_dict(state_dict, strict=False)
+    
     model = model.to(args.device)
     model.eval()
     
@@ -200,9 +225,27 @@ def main():
             image = preprocess_image(image_path, args.img_size)
             image = image.to(args.device)
             
+            if args.debug:
+                print(f"\nProcessing {image_path.name}")
+                print(f"Input image shape: {image.shape}, range: [{image.min().item():.4f}, {image.max().item():.4f}]")
+            
             # Get prediction
+            if args.model.lower() == 'csnet':
+                # Access the preprocess_input method with debug parameter
+                model.preprocess_input(image, debug=args.debug)
+            
             pred = model(image)
+            
+            if args.debug:
+                print(f"Raw prediction shape: {pred.shape}, range: [{pred.min().item():.4f}, {pred.max().item():.4f}]")
+            
             mask = postprocess_prediction(pred, task=args.task)
+            
+            if args.debug and isinstance(mask, np.ndarray):
+                unique_values = np.unique(mask)
+                print(f"Mask unique values: {unique_values}")
+                white_percentage = (mask > 0).mean() * 100
+                print(f"White percentage: {white_percentage:.2f}%")
             
             # Save prediction
             if args.task == 'vessel':
