@@ -1,0 +1,29 @@
+name: segmentation
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pytorch
+  - torchvision
+  - pytorch-cuda
+  - cudatoolkit
+  - cudnn
+  - numpy
+  - pillow
+  - matplotlib
+  - scikit-image
+  - scikit-learn
+  - pip
+  - pip:
+    - monai
+    - einops
+    - albumentations
+    - opencv-python
+    - tqdm
+    - colorama
+    - wandb
+    - tensorboard
+    - tabulate

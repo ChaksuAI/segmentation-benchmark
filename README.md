@@ -8,150 +8,185 @@ A flexible and extensible framework for benchmarking different segmentation mode
 .
 ├── models/
 │   ├── __init__.py      # Model registry and factory functions
-│   ├── base_model.py    # Base model class
-│   └── unet.py          # UNet implementation
+│   ├── unet.py          # UNet implementation
+│   ├── swinunetr.py     # SwinUNETR implementation
+│   └── unetr.py         # UNETR implementation
 ├── utils/
-│   ├── loss.py          # Various loss functions
-│   └── metrics.py       # Evaluation metrics
+│   ├── __init__.py      # Utility exports
+│   ├── cli.py           # Command line interface utilities
+│   ├── data.py          # Dataset and dataloader utilities
+│   ├── io.py            # File and directory operations
+│   ├── loss.py          # Loss functions
+│   ├── metrics.py       # Metrics and evaluation
+│   ├── model.py         # Model handling utilities
+│   ├── transforms.py    # Data transformations
+│   └── visualization.py # Visualization utilities
 ├── train.py             # Training script
-├── inference.py         # Inference script
-└── requirements.txt     # Project dependencies
+├── predict.py           # Prediction script
+├── train_odoc.sh        # ODOC training script
+├── train_vessel.sh      # Vessel training script
+├── predict_odoc.sh      # ODOC prediction script
+└── predict_vessel.sh    # Vessel prediction script
 ```
 
 ## Features
 
-- Multiple segmentation models support (UNet, with extensibility for SwinUNet, CS2Net, etc.)
-- Various loss functions (Dice, BCE-Dice, Focal)
-- Common evaluation metrics (Dice, IoU, Accuracy, Sensitivity, Specificity)
-- Support for both ODOC and vessel segmentation tasks
-- Flexible training configuration through command-line arguments
-- Easy inference with optional overlay visualization
-- Evaluation against ground truth masks
+- Multiple segmentation models:
+  - UNet with configurable backbone
+  - SwinUNETR with vision transformer
+  - UNETR for transformers-based segmentation
+- Advanced loss functions:
+  - Dice Loss
+  - Combined BCE-Dice Loss
+  - Focal Loss
+  - IoU Loss
+  - DIoU Loss
+- Comprehensive evaluation metrics:
+  - Dice coefficient
+  - IoU (Intersection over Union)
+  - Surface Distance
+  - Hausdorff Distance
+  - Confusion Matrix metrics
+- Rich visualization features:
+  - Colorized overlays (orange/red for ODOC, blue for vessels)
+  - Training curves for loss and metrics
+  - Progress bars with real-time metrics
+- Support for both tasks:
+  - ODOC (Optic Disc and Cup Segmentation)
+  - Vessel Segmentation
+- Modular and extensible design
+- Automatic dataset detection
+- Command-line interface with extensive options
+- Efficient data loading and processing
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone [repository-url]
+git clone https://github.com/Vidhyotha/Segmentation_Benchmark.git
 cd segmentation-benchmark
 
-# Create and activate a virtual environment (optional but recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows, use: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
+# Create and activate conda environment
+conda env create -f environment.yml
+conda activate segmentation
 ```
 
 ## Usage
 
-### Training
+### Quick Start
 
-Train a model using the following command:
+For ODOC segmentation:
+```bash
+# Training
+./train_odoc.sh
+
+# Prediction
+./predict_odoc.sh
+```
+
+For vessel segmentation:
+```bash
+# Training
+./train_vessel.sh
+
+# Prediction
+./predict_vessel.sh
+```
+
+### Detailed Usage
+
+#### Training
 
 ```bash
 python train.py \
-    --task odoc \                     # or 'vessel'
-    --data_dir path/to/dataset \
-    --model unet \
+    --task odoc \                    # or 'vessel'
+    --model unet \                   # unet, swinunetr, unetr
+    --dataset drishti \              # dataset name in data/
     --batch_size 8 \
+    --val_batch_size 4 \
     --epochs 100 \
-    --loss dice \                     # Available: dice, bce_dice, focal, bce
-    --metrics dice iou accuracy \
-    --output_dir outputs \
-    --exp_name experiment_1
+    --lr 3e-4 \
+    --loss dicece \                  # dice, dicece, focal, iou, diou
+    --metric dice \                  # dice, hausdorff, surface_distance, iou
+    --image_size 1024 \
+    --device cuda:0 \
+    --seed 42
 ```
 
-Available arguments:
-- `--task`: Choose between 'odoc' or 'vessel' segmentation
-- `--model`: Model architecture to use (default: 'unet')
-- `--loss`: Loss function to use
-- `--metrics`: Evaluation metrics to compute
-- `--optimizer`: Optimizer to use (adam, sgd, adamw)
-- See `train.py` for full list of arguments
-
-### Inference
-
-Run inference on new images:
+#### Prediction
 
 ```bash
-python inference.py \
-    --task odoc \                     # or 'vessel'
-    --input path/to/images \          # Single image or directory
-    --model unet \
-    --model_weights path/to/weights \
-    --save_overlay \                  # Optional: save predictions overlaid on input
-    --output_dir predictions
+python predict.py \
+    --task odoc \                    # or 'vessel'
+    --model unet \                   # must match trained model
+    --dataset drishti \
+    --model_path weights/best_unet_model.pth \
+    --image_size 1024 \
+    --device cuda:0 \
+    --metric dice
 ```
 
-For evaluation against ground truth:
-
-```bash
-python inference.py \
-    --task odoc \
-    --input path/to/images \
-    --model_weights path/to/weights \
-    --gt_dir path/to/ground_truth \
-    --metrics dice iou
-```
-
-## Adding New Components
-
-### Models
-
-1. Create a new model file in `models/`
-2. Inherit from `BaseModel`
-3. Register model in `models/__init__.py`
-
-Example:
-```python
-from .base_model import BaseModel
-
-class NewModel(BaseModel):
-    def __init__(self, n_channels, n_classes):
-        super().__init__()
-        # Model implementation
-
-    def forward(self, x):
-        # Forward pass implementation
-        return x
-
-# In models/__init__.py:
-register_model('new_model', NewModel)
-```
-
-### Loss Functions
-
-Add new loss functions in `utils/loss.py` and register them in the `get_loss_function` factory function.
-
-### Metrics
-
-Add new metrics in `utils/metrics.py` and register them in the `get_metrics` factory function.
-
-## Expected Dataset Structure
+## Dataset Structure
 
 ```
-dataset/
-├── images/
-│   ├── train/
-│   └── val/
-└── masks/
-    ├── train/
-    └── val/
+data/
+├── drishti/                    # Example dataset
+│   ├── images/
+│   │   ├── 19_DRISHTI_001.png
+│   │   └── ...
+│   └── masks/
+│       ├── odoc/              # For ODOC task
+│       │   ├── 19_DRISHTI_001.png  # White(bg)/Gray(disc)/Black(cup)
+│       │   └── ...
+│       └── vessel/            # For vessel task
+│           ├── 19_DRISHTI_001.png  # White(bg)/Black(vessel)
+│           └── ...
 ```
 
-- Images should be in common formats (jpg, png)
-- Masks should be binary images (0 or 255 pixel values)
-- For ODOC: use 2-channel masks (OD and OC)
-- For vessels: use single-channel masks
+- Images: RGB format in common formats (png, jpg)
+- ODOC masks: 8-bit grayscale with:
+  - 255 (white) = background
+  - 128 (gray) = optic disc
+  - 0 (black) = optic cup
+- Vessel masks: Binary with:
+  - 255 (white) = background
+  - 0 (black) = vessel
 
-## Contributing
+## Directory Structure
 
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Submit a pull request
+- `outputs/`: Training outputs (one directory per experiment)
+  - Training curves
+  - Configuration files
+  - TensorBoard logs
+- `weights/`: Model weights
+  - Best model weights
+  - Latest model weights
+  - Model checkpoints
+- `results/`: Prediction results
+  - Binary masks
+  - Colorized overlays
+  - Evaluation metrics
+
+## Advanced Features
+
+### Visualization
+- Real-time training progress with colorized metrics
+- Automatic overlay generation for predictions
+- Training curves showing loss and metrics
+- TensorBoard integration for detailed monitoring
+
+### Model Management
+- Automatic checkpoint saving
+- Best model tracking
+- Easy model loading with fallbacks
+- Symlinks to latest weights
+
+### Evaluation
+- Comprehensive metrics for both tasks
+- Per-class metrics calculation
+- Support for multiple ground truth formats
+- Detailed evaluation reports
+
 
 ## License
 
