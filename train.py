@@ -1,329 +1,268 @@
-import argparse
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
+#!/usr/bin/env python3
+"""
+Medical Image Segmentation Training Script
+Supports multiple models and datasets for optic disc/cup segmentation.
+"""
 import os
-from pathlib import Path
-from models import get_model
-from utils.loss import get_loss_function
-from utils.metrics import get_metrics
-from utils.data import create_dataloaders
-from tqdm import tqdm
+import sys
+import logging
 import time
-from datetime import timedelta
-import numpy as np
-from PIL import Image
+from tabulate import tabulate
+import torch
+import monai
+from monai.transforms import AsDiscrete, Compose
+from monai.visualize import plot_2d_or_3d_image
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+from datetime import datetime
+from colorama import Fore, Style
 
-torch.autograd.set_detect_anomaly(True)
+# PyTorch 2.6 fix
+import torch.serialization
+from monai.data.meta_tensor import MetaTensor
+torch.serialization.add_safe_globals([MetaTensor])
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Training script for segmentation')
-    
-    # Dataset parameters
-    parser.add_argument('--task', type=str, required=True, choices=['odoc', 'vessel'],
-                      help='Segmentation task (odoc or vessel)')
-    parser.add_argument('--dataset', type=str, required=True,
-                      help='Dataset name (e.g., drive, chase, stare)')
-    parser.add_argument('--train_split', type=float, default=0.8,
-                      help='Train/val split ratio')
-    parser.add_argument('--img_size', type=int, default=1024,
-                      help='Input image size')
-    
-    # Model parameters
-    parser.add_argument('--model', type=str, default='unet',
-                      help='Model architecture to use')
-    parser.add_argument('--pretrained', type=str, default=None,
-                      help='Path to pretrained weights')
-    
-    # Training parameters
-    parser.add_argument('--batch_size', type=int, default=8,
-                      help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=100,
-                      help='Number of epochs to train')
-    parser.add_argument('--lr', type=float, default=0.001,
-                      help='Learning rate')
-    parser.add_argument('--loss', type=str, default='dice',
-                      help='Loss function to use')
-    parser.add_argument('--metrics', nargs='+', default=['dice', 'iou'],
-                      help='Metrics to evaluate')
-    parser.add_argument('--optimizer', type=str, default='adam',
-                      choices=['adam', 'sgd', 'adamw'],
-                      help='Optimizer to use')
-    
-    # Hardware parameters
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
-                      help='Device to use for training')
-    parser.add_argument('--gpu_id', type=int, default=0,
-                      help='ID of GPU to use when multiple GPUs are available')
-    parser.add_argument('--num_workers', type=int, default=4,
-                      help='Number of workers for data loading')
-    
-    # Output parameters
-    parser.add_argument('--output_dir', type=str, default='outputs',
-                      help='Directory to save outputs')
-    parser.add_argument('--exp_name', type=str, default=None,
-                      help='Experiment name for logging')
-    
-    # Add this line to your parser arguments
-    parser.add_argument('--debug', action='store_true',
-                      help='Enable anomaly detection for debugging')
-    
-    return parser.parse_args()
+# Local imports
+from models import get_model
+from utils.transforms import get_train_transforms, get_val_transforms
+from utils.loss import get_loss_function
+from utils.metrics import get_metric
+from utils.data import get_datasets, get_data_loaders, get_combined_datasets
+from utils.cli import parse_args, print_header, print_config
+from utils.model import generate_default_config, save_model, create_symlink, initialize_model
+from utils.visualization import plot_training_curves, log_epoch_metrics
+from utils.io import create_output_directories, save_config, get_dataset_path
 
-def train_epoch(model, train_loader, criterion, optimizer, device, metrics, args=None, epoch=None):
-    """Train for one epoch"""
-    model.train()
-    epoch_loss = 0
-    metric_values = {name: 0.0 for name in metrics.keys()}
-    
-    # Create visualization directory if it doesn't exist
-    vis_dir = Path("visualise/epoch")
-    vis_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Add tqdm progress bar
-    pbar = tqdm(train_loader, desc="Training", leave=False)
-    
-    for batch_idx, (data, target) in enumerate(pbar):
-        data, target = data.to(device), target.to(device)
-        
-        optimizer.zero_grad()
-        output = model(data)
+# Suppress warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-
-        #================================================================================================
-        # only needed for visualization of same image from each batch
-        # (works only with batch=1 and will not save the exact same image for every batch. NEEDS FIXING)
-        #================================================================================================
-        
-        # # Save a visualization copy without modifying the original output tensor
-        # if batch_idx == 0 and epoch is not None:  # Only save the first batch
-        #     # Create a copy for visualization
-        #     vis_output = output.clone().cpu().detach()
-            
-        #     # Make sure we're working with the first image in the batch
-        #     if vis_output.shape[0] > 0:
-        #         vis_single = vis_output[0]  # Get first image in batch
-                
-        #         # Convert to numpy for visualization
-        #         if vis_single.shape[0] == 1:  # Single channel output (vessel)
-        #             # Apply sigmoid if needed
-        #             if vis_single.min() < 0 or vis_single.max() > 1:
-        #                 vis_np = torch.sigmoid(vis_single).numpy()
-        #             else:
-        #                 vis_np = vis_single.numpy()
-                    
-        #             # Convert to 8-bit image
-        #             vis_np = (vis_np[0] * 255).astype(np.uint8)
-                    
-        #             # Save using PIL - include epoch number in filename
-        #             img = Image.fromarray(vis_np)
-        #             img.save(f"{vis_dir}/output_epoch_{epoch:03d}.png")
-
-        # Use the original output for loss calculation and backprop
-        
-        loss = criterion(output, target)
-
-        loss.backward()
-        optimizer.step()
-        
-        epoch_loss += loss.item()
-        
-        # Calculate metrics
-        with torch.no_grad():
-            batch_metrics = {}
-            for name, metric_fn in metrics.items():
-                # We pass raw outputs to metrics functions, which will handle activation 
-                # internally in their _align_dimensions method
-                value = metric_fn(output, target).item()
-                metric_values[name] += value
-                batch_metrics[name] = value
-        
-        # Add this inside train_epoch function to debug metrics
-        if args and args.debug and batch_idx == 0:  # Only check first batch
-            from utils.metrics import SegmentationMetrics
-            print("\n----- Metrics Debug Information -----")
-            SegmentationMetrics.debug_metrics(output.detach(), target)
-            print("-------------------------------------\n")
-        
-        # Update progress bar with current metrics
-        pbar.set_postfix(loss=f"{loss.item():.4f}", **{k: f"{v:.4f}" for k, v in batch_metrics.items()})
+def train(args, config, available_datasets):
+    """Main training function."""
+    # Setup logging
+    monai.config.print_config()
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
     
-    # Average over batches
-    num_batches = len(train_loader)
-    epoch_loss /= num_batches
-    for name in metric_values:
-        metric_values[name] /= num_batches
-    
-    return epoch_loss, metric_values
-
-def validate(model, val_loader, criterion, device, metrics, args=None):
-    """Validate the model"""
-    model.eval()
-    val_loss = 0
-    metric_values = {name: 0.0 for name in metrics.keys()}
-    
-    # Add tqdm progress bar
-    pbar = tqdm(val_loader, desc="Validating", leave=False)
-    
-    with torch.no_grad():
-        for batch_idx, (data, target) in enumerate(pbar):
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            batch_loss = criterion(output, target).item()
-            val_loss += batch_loss
-            
-            # Calculate metrics
-            batch_metrics = {}
-            for name, metric_fn in metrics.items():
-                value = metric_fn(output, target).item()
-                metric_values[name] += value
-                batch_metrics[name] = value
-            
-            # Add debug for validation as well
-            if args and args.debug and batch_idx == 0:  # Only check first batch
-                from utils.metrics import SegmentationMetrics
-                print("\n----- Validation Metrics Debug Information -----")
-                SegmentationMetrics.debug_metrics(output.detach(), target)
-                print("-------------------------------------\n")
-            
-            # Update progress bar with current metrics
-            pbar.set_postfix(loss=f"{batch_loss:.4f}", **{k: f"{v:.4f}" for k, v in batch_metrics.items()})
-    
-    # Average over batches
-    num_batches = len(val_loader)
-    val_loss /= num_batches
-    for name in metric_values:
-        metric_values[name] /= num_batches
-    
-    return val_loss, metric_values
-
-def main():
-    args = parse_args()
-    
-    # Enable anomaly detection for debugging
-    if args.debug:
-        torch.autograd.set_detect_anomaly(True)
-        print("Anomaly detection enabled.")
-    
-    # Set specific GPU if requested
-    if args.device == 'cuda':
-        device = f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu"
-        torch.cuda.set_device(args.gpu_id)
+    # Check for multiple datasets
+    if ',' in args.datasets:
+        using_multiple_datasets = True
+        print(f"{Fore.YELLOW}Using multiple datasets: {args.datasets}")
+        # We'll set data_dir to None since we're using multiple
+        data_dir = None
     else:
-        device = "cpu"
+        using_multiple_datasets = False
+        # Get single dataset path as before
+        data_dir = get_dataset_path(available_datasets, args.datasets)
     
-    print(f"Using device: {device}")
+    # Set device
+    device = torch.device(args.device)
     
-    # Construct data directory path from dataset name
-    data_dir = Path('data') / args.dataset
+    # Print welcome message and system info
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    print_header(f"Starting training at {current_time}")
+    print_config(args, available_datasets, config)
     
-    # Create output directory
-    if args.exp_name is None:
-        args.exp_name = f"{args.dataset}_{args.task}_{args.model}_{args.loss}"
+    print_header("System Information")
+    system_info = [
+        ["PyTorch version", torch.__version__],
+        ["CUDA available", torch.cuda.is_available()],
+        ["CUDA version", torch.version.cuda if torch.cuda.is_available() else "N/A"],
+        ["Selected device", args.device],
+        ["CUDA device name", torch.cuda.get_device_name(device.index) if device.type == 'cuda' else "N/A"],
+        ["CUDA memory", f"{torch.cuda.get_device_properties(device.index).total_memory / 512**3:.1f} GB" 
+            if device.type == 'cuda' else "N/A"],
+        ["MONAI version", monai.__version__],
+        ["Dataset", f"{args.datasets} ({data_dir})"],
+    ]
+    print(tabulate(system_info, tablefmt="fancy_grid"))
+    print()
     
-    output_dir = Path(args.output_dir) / args.exp_name
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Set deterministic training
+    if args.seed is not None:
+        monai.utils.set_determinism(seed=args.seed)
     
-    # Set up model
-    if args.task == 'odoc':
-        n_classes = 3  # Background, OD and OC
-    else:  # vessel
-        n_classes = 1
+    # Create transforms and datasets
+    transforms = {
+        "train": get_train_transforms(config),
+        "val": get_val_transforms(config)
+    }
     
-    # Get the model class and then instantiate it
-    model_class = get_model(args.model)
-    model = model_class(n_channels=3, n_classes=n_classes)
-    
-    if args.pretrained:
-        model.load_state_dict(torch.load(args.pretrained))
-    
-    model = model.to(device)
-    
-    # Set up loss function and metrics
-    criterion = get_loss_function(args.loss)
-    metrics = get_metrics(args.metrics)
-    
-    # Set up optimizer
-    if args.optimizer == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    elif args.optimizer == 'sgd':
-        optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
-    else:  # adamw
-        optimizer = optim.AdamW(model.parameters(), lr=args.lr)
-    
-    # Create dataloaders
-    train_loader, val_loader = create_dataloaders(
-        data_dir,  # Use constructed data_dir instead of args.data_dir
-        args.task, 
-        args.img_size, 
-        args.batch_size, 
-        args.train_split,
-        args.num_workers
-    )
-    
-    # Training loop
-    best_val_loss = float('inf')
+    print_header("Loading Datasets")
     start_time = time.time()
     
-    print("\n" + "="*80)
-    print(f"Starting training: {args.dataset}_{args.task} with {args.model} model")
-    print(f"Training for {args.epochs} epochs with {args.optimizer} optimizer (lr={args.lr})")
-    print(f"Loss function: {args.loss}, Metrics: {', '.join(args.metrics)}")
-    print("="*80 + "\n")
+    if using_multiple_datasets:
+        # Use new function to load multiple datasets
+        train_ds, val_ds = get_combined_datasets(args.datasets, available_datasets, 
+                                              transforms, 0.8, args.task)
+    else:
+        # Use existing function for single dataset
+        train_ds, val_ds = get_datasets(data_dir, transforms, 0.8, args.task)
+    
+    batch_sizes = {"train": args.batch_size, "val": args.val_batch_size}
+    train_loader, val_loader = get_data_loaders(train_ds, val_ds, batch_sizes)
+    data_load_time = time.time() - start_time
+    
+    print(f"{Fore.GREEN}✓ Datasets loaded in {data_load_time:.2f} seconds")
+    print(f"  • Training samples: {Fore.YELLOW}{len(train_ds)}")
+    print(f"  • Validation samples: {Fore.YELLOW}{len(val_ds)}")
+    print()
+    
+    # Initialize model
+    print_header("Creating Model")
+    model = initialize_model(args, config, device)
+    
+    # Print model summary
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"{Fore.GREEN}✓ Model {Fore.CYAN}{args.model}{Fore.GREEN} created")
+    print(f"  • Parameters: {Fore.YELLOW}{num_params:,}")
+    print(f"  • Device: {Fore.YELLOW}{device}")
+    print(f"{Fore.YELLOW}• Mixed precision training disabled")
+    print()
+    
+    # Setup training components
+    loss_function = get_loss_function(args.loss)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=args.lr,
+        weight_decay=config.get("weight_decay", 1e-5)
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    metric = get_metric(args.metric)
+    num_classes = 2 if args.task == "vessel" else 3
+    post_trans = Compose([AsDiscrete(argmax=True, to_onehot=num_classes)])
+    
+    # Create output directories
+    output_dir, weights_dir = create_output_directories(args, timestamp)
+    
+    # Setup TensorBoard
+    writer = SummaryWriter(log_dir=os.path.join(output_dir, "runs"))
+    
+    # Initialize tracking variables
+    best_metric = -1
+    best_metric_epoch = -1
+    epoch_loss_values = []
+    metric_values = []
+    
+    # Save configuration
+    config_path = os.path.join(output_dir, "training_config.json")
+    save_config(config_path, args, config)
+    
+    # Start training loop
+    print_header("Training")
+    overall_start_time = time.time()
     
     for epoch in range(args.epochs):
-        epoch_start = time.time()
+        epoch_start_time = time.time()
         
-        # Train
-        train_loss, train_metrics = train_epoch(
-            model, train_loader, criterion, optimizer, device, metrics, args, epoch
+        # Training phase
+        model.train()
+        epoch_loss = 0
+        step = 0
+        
+        progress_bar = tqdm(
+            train_loader, 
+            desc=f"{Fore.GREEN}Training",
+            unit="batch",
+            leave=False,
+            bar_format="{l_bar}{bar:20}{r_bar}"
         )
         
-        # Validate
-        val_loss, val_metrics = validate(
-            model, val_loader, criterion, device, metrics, args
+        for batch_data in progress_bar:
+            step += 1
+            inputs = batch_data["image"].to(device)
+            labels = batch_data["label"].to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = loss_function(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            if step % 20 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            epoch_loss += loss.item()
+            progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
+            writer.add_scalar("train_loss", loss.item(), len(train_loader) * epoch + step)
+        
+        scheduler.step()
+        
+        # Compute epoch metrics
+        epoch_loss /= step
+        epoch_loss_values.append(epoch_loss)
+        epoch_time = time.time() - epoch_start_time
+        
+        # Log training metrics
+        log_epoch_metrics(args, epoch, args.epochs, epoch_loss, scheduler, epoch_time)
+        
+        # Validation phase
+        val_start_time = time.time()
+        model.eval()
+        
+        val_progress = tqdm(
+            val_loader, 
+            desc=f"{Fore.BLUE}Validation",
+            unit="batch",
+            leave=False,
+            bar_format="{l_bar}{bar:20}{r_bar}"
         )
         
-        # Save best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), output_dir / 'best_model.pth')
-            saved_text = "✓ Saved new best model"
-        else:
-            saved_text = ""
-        
-        # Calculate epoch time and estimate remaining time
-        epoch_time = time.time() - epoch_start
-        elapsed = time.time() - start_time
-        estimated_total = (epoch_time * args.epochs) / (epoch + 1)
-        estimated_remaining = estimated_total - elapsed
-        
-        # Log metrics with pretty formatting
-        print(f"\n----- Epoch {epoch+1}/{args.epochs} | Time: {timedelta(seconds=int(epoch_time))} -----")
-        print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} {saved_text}")
-        
-        # Print metrics in a table format
-        print("\n{:<10} {:<15} {:<15}".format("Metric", "Train", "Validation"))
-        print("-" * 40)
-        for name in metrics:
-            print("{:<10} {:<15.4f} {:<15.4f}".format(
-                name, train_metrics[name], val_metrics[name]))
-        
-        # Print time information
-        print(f"\nElapsed: {timedelta(seconds=int(elapsed))}, "
-              f"Remaining: {timedelta(seconds=int(estimated_remaining))}\n")
-        
-        # Save checkpoint
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'train_metrics': train_metrics,
-            'val_metrics': val_metrics,
-        }, output_dir / 'last_checkpoint.pth')
+        with torch.no_grad():
+            for val_data in val_progress:
+                val_images = val_data["image"].to(device)
+                val_labels = val_data["label"].to(device)
+                
+                val_outputs = model(val_images)
+                val_outputs = [post_trans(i) for i in monai.data.decollate_batch(val_outputs)]
+                metric(y_pred=val_outputs, y=val_labels)
+            
+            # Aggregate validation metrics
+            metric_value = metric.aggregate().item()
+            metric.reset()
+            
+            metric_values.append(metric_value)
+            val_time = time.time() - val_start_time
+            
+            # Check for best model
+            is_best = metric_value > best_metric
+            if is_best:
+                best_metric = metric_value
+                best_metric_epoch = epoch + 1
+                best_indicator = save_model(model, args, weights_dir, True, config_path)
+            else:
+                best_indicator = f"{Fore.YELLOW}(best: {best_metric:.4f} @ epoch {best_metric_epoch})"
+            
+            print(f"  {Fore.BLUE}• Validation {args.metric.capitalize()}: {Fore.YELLOW}{metric_value:.4f} {best_indicator}")
+            print(f"  {Fore.BLUE}• Validation time: {Fore.YELLOW}{val_time:.2f} seconds")
+            
+            # Log to TensorBoard
+            writer.add_scalar(f"val_mean_{args.metric}", metric_value, epoch + 1)
+            plot_2d_or_3d_image(val_images, epoch + 1, writer, index=0, tag="image")
+            plot_2d_or_3d_image(val_labels, epoch + 1, writer, index=0, tag="label")
+            plot_2d_or_3d_image(val_outputs, epoch + 1, writer, index=0, tag="output")
+            writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], epoch + 1)
+    
+    # Training complete - print summary
+    total_time = time.time() - overall_start_time
+    hours, remainder = divmod(total_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    print_header("Training Complete")
+    print(f"{Fore.GREEN}• Total training time: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
+    print(f"{Fore.GREEN}• Best validation {args.metric.capitalize()}: {Fore.YELLOW}{best_metric:.4f} {Fore.GREEN}(epoch {best_metric_epoch})")
+    
+    # Plot training curves
+    plot_training_curves(epoch_loss_values, metric_values, output_dir)
+    
+    writer.close()
+    
+    # Save final model
+    save_model(model, args, weights_dir)
+    create_symlink(args, weights_dir)
+    
+    print(f"\n{Fore.GREEN}{Style.BRIGHT}Training completed successfully!")
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    args, available_datasets = parse_args("Train a model for optic disc/cup segmentation")
+    config = generate_default_config(args)
+    train(args, config, available_datasets)

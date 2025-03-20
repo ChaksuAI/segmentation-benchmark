@@ -1,264 +1,229 @@
-import numpy as np
+import os
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
-import cv2
-from typing import Dict, List, Tuple
-from pathlib import Path
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-from PIL import Image
-import torchvision.transforms as transforms 
+from monai.data import CacheDataset, Dataset, DataLoader
+from colorama import Fore, Style
 
-class RetinalDataset(Dataset):
-    """Dataset for retinal image segmentation (vessel or ODOC)"""
-    def __init__(self, data_dir: str, task: str = 'vessel', img_size: int = 512, 
-                 transform=None, mode: str = 'train', ordinal: bool = False):
-        """
-        Args:
-            data_dir: Path to dataset directory
-            task: Task type ('vessel' or 'odoc')
-            img_size: Input image size
-            transform: Albumentations transforms to apply
-            mode: 'train' or 'val'
-            ordinal: Whether to use ordinal approach for ODOC segmentation
-        """
-        self.data_dir = Path(data_dir)
-        self.task = task
-        self.img_size = img_size
-        self.transform = transform
-        self.mode = mode
-        self.ordinal = ordinal
+def get_datasets(data_dir, transforms, train_ratio=0.8, task="odoc"):
+    """Create train and validation datasets with support for multiple image formats"""
+    # Get image files
+    images_dir = os.path.join(data_dir, "images")
+    
+    # Check if directory exists
+    if not os.path.exists(images_dir):
+        print(f"{Fore.RED}Error: Images directory not found: {images_dir}")
+        return None, None
+    
+    # Support multiple image formats (PNG and JPG/JPEG)    
+    image_files = sorted([
+        f for f in os.listdir(images_dir) 
+        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff'))
+    ])
+    print(f"{Fore.GREEN}Found {len(image_files)} image files.")
+    
+    num_files = len(image_files)
+    num_train = int(train_ratio * num_files)
+    
+    # Create data dictionaries
+    mask_folder = "masks/odoc" if task == "odoc" else "masks/vessel"
+    mask_dir = os.path.join(data_dir, mask_folder)
+    
+    # Check if mask directory exists
+    if not os.path.exists(mask_dir):
+        # Try alternative structure (flat masks folder)
+        alt_mask_dir = os.path.join(data_dir, "masks")
+        if os.path.exists(alt_mask_dir):
+            print(f"{Fore.YELLOW}Using alternative mask directory: {alt_mask_dir}")
+            mask_dir = alt_mask_dir
+        else:
+            print(f"{Fore.RED}Error: Mask directory not found: {mask_dir}")
+            return None, None
+    
+    # Check for matching mask files - more flexible matching
+    valid_pairs = []
+    missing_masks = []
+    
+    for img_file in image_files:
+        img_path = os.path.join(images_dir, img_file)
+        img_basename = os.path.splitext(img_file)[0]
+        found_mask = False
         
-        # Get data paths
-        self.data = self._get_data()
+        # Skip the exact filename check and always try all extensions
+        for ext in ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.gif']:
+            mask_path = os.path.join(mask_dir, img_basename + ext)
+            if os.path.exists(mask_path):
+                valid_pairs.append({"image": img_path, "label": mask_path})
+                found_mask = True
+                break
         
-    def __len__(self) -> int:
-        return len(self.data)
+        if not found_mask:
+            missing_masks.append(img_file)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        data_item = self.data[idx]
+    if missing_masks:
+        if len(missing_masks) < 10:
+            print(f"{Fore.YELLOW}Warning: No masks found for {len(missing_masks)} images: {missing_masks}")
+        else:
+            print(f"{Fore.YELLOW}Warning: No masks found for {len(missing_masks)} images")
+    
+    print(f"{Fore.GREEN}Found {len(valid_pairs)} valid image-mask pairs")
+    if len(valid_pairs) == 0:
+        print(f"{Fore.RED}Error: No valid image-mask pairs found!")
+        print(f"Sample image: {os.path.join(images_dir, image_files[0]) if image_files else 'No images'}")
+        print(f"Expected mask location: {os.path.join(mask_dir, os.path.splitext(image_files[0])[0] + '.png') if image_files else 'N/A'}")
         
-        # Load image
-        image = cv2.imread(data_item["image"])
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # Print available files in mask directory for debugging
+        if os.path.exists(mask_dir):
+            mask_files = os.listdir(mask_dir)
+            print(f"Files in mask directory: {mask_files[:10] if len(mask_files) > 10 else mask_files}")
         
-        # Load mask(s)
-        if self.task == "vessel":
-            mask = cv2.imread(data_item["mask"], cv2.IMREAD_GRAYSCALE)
-            # Normalize mask to [0, 1]
-            mask = mask / 255.0
-            mask = np.expand_dims(mask, axis=-1)  # Add channel dimension
-            
-        elif self.task == "odoc":
-            # Always load as ordinal mask for ODOC task
-            mask = cv2.imread(data_item["mask"], cv2.IMREAD_GRAYSCALE)
-            
-            # Convert ordinal values to float [0, 1]
-            # 255 (white/background) -> 0.0
-            # 128 (grey/OD) -> 0.5
-            # 0 (black/OC) -> 1.0
-            mask = mask.astype(float)
-            mask = (255 - mask) / 255.0
-            mask = np.expand_dims(mask, axis=-1)  # Add channel dimension
+        return None, None
+    
+    # Split into train and validation
+    num_train = int(train_ratio * len(valid_pairs))
+    train_files = valid_pairs[:num_train]
+    val_files = valid_pairs[num_train:]
+    
+    print(f"{Fore.GREEN}Created dataset with {Fore.YELLOW}{len(train_files)} training samples and {Fore.YELLOW}{len(val_files)} validation samples")
+    
+    # Create datasets
+    train_ds = CacheDataset(data=train_files, transform=transforms["train"], cache_rate=0.2)
+    val_ds = CacheDataset(data=val_files, transform=transforms["val"], cache_rate=0.2)
+    
+    return train_ds, val_ds
+
+def get_test_dataset(data_dir, transforms, train_ratio=0.8, task="odoc", split=True):
+    """Get dataset for testing or validation with support for multiple image formats"""
+    # Get image files
+    images_dir = os.path.join(data_dir, "images")
+    
+    # Support multiple image formats
+    image_files = sorted([
+        f for f in os.listdir(images_dir) 
+        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff'))
+    ])
+    num_files = len(image_files)
+    
+    # Create data dictionaries
+    mask_folder = "masks/odoc" if task == "odoc" else "masks/vessel"
+    mask_dir = os.path.join(data_dir, mask_folder)
+    
+    # Check if mask directory exists
+    if not os.path.exists(mask_dir):
+        # Try alternative structure
+        alt_mask_dir = os.path.join(data_dir, "masks")
+        if os.path.exists(alt_mask_dir):
+            print(f"{Fore.YELLOW}Using alternative mask directory: {alt_mask_dir}")
+            mask_dir = alt_mask_dir
+    
+    # Get test files based on whether we want to split the dataset
+    if split:
+        # Use the validation split
+        num_train = int(train_ratio * num_files)
+        test_indices = list(range(num_train, num_files))
+    else:
+        # Use all files for testing
+        test_indices = list(range(num_files))
+    
+    test_files = []
+    for i in test_indices:
+        img_file = image_files[i]
+        img_path = os.path.join(images_dir, img_file)
+        img_basename = os.path.splitext(img_file)[0]
+        found_mask = False
         
-        # Apply transforms
-        if self.transform:
-            transformed = self.transform(image=image, mask=mask)
-            image = transformed["image"]
-            mask = transformed["mask"]
-        
-        return image, mask
+        # Skip exact filename check and try all extensions
+        for ext in ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.gif']:
+            mask_path = os.path.join(mask_dir, img_basename + ext)
+            if os.path.exists(mask_path):
+                test_files.append({"image": img_path, "label": mask_path})
+                found_mask = True
+                break
     
-    def _get_data(self) -> List[Dict]:
-        """
-        Get dataset files based on task and dataset type
-        Returns:
-            List of dictionaries containing image and mask paths
-        """
-        data = []
-        images_path = self.data_dir / "images"
-
-        if not images_path.exists():
-            raise ValueError(f"Images directory not found in {self.data_dir}")
-
-        # Get all image files
-        image_files = sorted(list(images_path.glob("*.[jp][pn][g]")))  # jpg, jpeg, png
-        
-        if self.task == "vessel":
-            # For vessel task, masks are in masks/vessel directory
-            masks_path = self.data_dir / "masks" / "vessel"
-
-            if not masks_path.exists():
-                raise ValueError(f"Vessel masks directory not found in {self.data_dir}/masks")
-
-            for img_path in image_files:
-                mask_found = False
-                # Try different extensions
-                for ext in [".png", ".jpg", ".jpeg"]:
-                    mask_path = masks_path / f"{img_path.stem}_mask{ext}"
-                    if not mask_path.exists():
-                        mask_path = masks_path / f"{img_path.stem}{ext}"
-                    if mask_path.exists():
-                        data.append({
-                            "image": str(img_path),
-                            "mask": str(mask_path),
-                            "dataset": self.data_dir.name
-                        })
-                        mask_found = True
-                        break
-                        
-        elif self.task == "odoc":
-            # ODOC is always treated as ordinal now
-            # Look for combined ordinal masks in masks/odoc directory
-            masks_path = self.data_dir / "masks" / "odoc"
-            
-            if not masks_path.exists():
-                raise ValueError(f"Ordinal masks directory not found in {self.data_dir}/masks/odoc")
-                
-            for img_path in image_files:
-                # Try different mask extensions
-                for ext in [".png", ".jpg", ".jpeg"]:
-                    mask_path = masks_path / f"{img_path.stem}{ext}"
-                    if not mask_path.exists():
-                        # Try with _ordinal suffix
-                        mask_path = masks_path / f"{img_path.stem}_ordinal{ext}"
-                    if mask_path.exists():
-                        data.append({
-                            "image": str(img_path),
-                            "mask": str(mask_path),
-                            "dataset": self.data_dir.name
-                        })
-                        break
-
-        if not data:
-            raise ValueError(f"No valid image-mask pairs found in {self.data_dir} for task {self.task}")
-
-        print(f"Found {len(data)} valid image-mask pairs in {self.data_dir}")
-        return data
-
-
-def get_transforms(img_size, mode="train"):
-    """
-    Get transforms for data augmentation
-    Args:
-        img_size: Target image size
-        mode: 'train' or 'val'
-    Returns:
-        Albumentations transform composition
-    """
-    if mode == "train":
-        return A.Compose([
-            A.Resize(img_size, img_size),
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.Affine(
-                translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
-                scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)},
-                rotate=(-15, 15),
-                p=0.5
-            ),
-            A.OneOf([
-                A.RandomBrightnessContrast(p=0.5),
-                A.RandomGamma(p=0.5),
-                A.CLAHE(p=0.5),
-            ], p=0.3),
-            A.OneOf([
-                A.GaussNoise(p=0.5),
-                A.GaussianBlur(p=0.5),
-            ], p=0.2),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2(),
-        ])
-    else:  # val or test
-        return A.Compose([
-            A.Resize(img_size, img_size),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2(),
-        ])
-
-
-def create_dataloaders(data_dir, task, img_size, batch_size, split_ratio=0.8, num_workers=4, ordinal=None):
-    """Create train and validation dataloaders"""
+    print(f"{Fore.GREEN}Found {Fore.YELLOW}{len(test_files)} test images with masks")
     
-    # Get transforms
-    train_transform = get_transforms(img_size, mode="train")
-    val_transform = get_transforms(img_size, mode="val")
+    # Create dataset
+    test_ds = Dataset(data=test_files, transform=transforms["test"])
     
-    # Create dataset - ordinal param is ignored, since ODOC is always ordinal now
-    dataset = RetinalDataset(data_dir, task, img_size, transform=None)
+    return test_ds
+
+def get_data_loaders(train_ds, val_ds, batch_sizes):
+    """Create data loaders"""
+    # Safety check to prevent empty dataset errors
+    if train_ds is None or val_ds is None:
+        raise ValueError("Dataset is empty or not properly initialized")
     
-    # Split dataset
-    num_train = int(len(dataset) * split_ratio)
-    num_val = len(dataset) - num_train
-    
-    # Use random_split to split the dataset
-    train_dataset, val_dataset = random_split(
-        dataset, [num_train, num_val], 
-        generator=torch.Generator().manual_seed(42)
-    )
-    
-    # Apply transforms
-    train_dataset.dataset.transform = train_transform
-    val_dataset.dataset.transform = val_transform
-    
-    # Create dataloaders
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True
+        train_ds, 
+        batch_size=batch_sizes.get("train", 8),
+        shuffle=True, 
+        num_workers=4,
+        pin_memory=torch.cuda.is_available()
     )
-    
+
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
+        val_ds, 
+        batch_size=batch_sizes.get("val", 4),
+        num_workers=2,
+        pin_memory=torch.cuda.is_available()
     )
-    
-    # Pretty print dataset information with formatting
-    print("\n" + "="*40)
-    print(f"Dataset: {Path(data_dir).name}")
-    print(f"Task: {task}" + (" (Ordinal)" if task == 'odoc' else ""))
-    print(f"Total samples: {len(dataset)}")
-    print(f"Training samples: {len(train_dataset)}")
-    print(f"Validation samples: {len(val_dataset)}")
-    print("="*40 + "\n")
     
     return train_loader, val_loader
 
-
-class GreenCLAHEExtractor(object):
-    """Extract the green channel and apply CLAHE"""
+def get_combined_datasets(dataset_names, available_datasets, transforms, train_ratio=0.8, task="odoc"):
+    """Combine multiple datasets for training and validation
     
-    def __init__(self, clip_limit=2.0, tile_grid_size=(8, 8)):
-        self.clip_limit = clip_limit
-        self.tile_grid_size = tile_grid_size
-        self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    Args:
+        dataset_names: Comma-separated list of dataset names
+        available_datasets: Dictionary mapping dataset names to paths
+        transforms: Dictionary of transforms for train and validation
+        train_ratio: Ratio to split training/validation data
+        task: Segmentation task (odoc or vessel)
+        
+    Returns:
+        tuple: (combined_train_ds, combined_val_ds)
+    """
+    from monai.data import CacheDataset
     
-    def __call__(self, img):
-        """
-        Args:
-            img: PIL Image or numpy array
-        Returns:
-            Single-channel PIL Image with CLAHE applied to the green channel
-        """
-        # Convert PIL Image to numpy array if needed
-        if isinstance(img, Image.Image):
-            img_np = np.array(img)
-        else:
-            img_np = img
+    # Parse dataset names (handle both comma-separated string and list)
+    if isinstance(dataset_names, str):
+        dataset_list = [ds.strip() for ds in dataset_names.split(',')]
+    else:
+        dataset_list = dataset_names
+        
+    print(f"Loading {len(dataset_list)} datasets: {', '.join(dataset_list)}")
+    
+    # Collect training and validation sets
+    all_train_files = []
+    all_val_files = []
+    
+    # Load each dataset
+    for dataset_name in dataset_list:
+        if dataset_name not in available_datasets:
+            print(f"{Fore.YELLOW}Warning: Dataset '{dataset_name}' not found in available datasets")
+            continue
             
-        # Extract green channel (index 1 in RGB)
-        green_channel = img_np[:, :, 1]
+        data_dir = os.path.join(os.getcwd(), available_datasets[dataset_name])
+        print(f"{Fore.GREEN}• Loading dataset: {Fore.YELLOW}{dataset_name} ({data_dir})")
         
-        # Apply CLAHE to green channel
-        enhanced_green = self.clahe.apply(green_channel)
+        # Get dataset-specific transforms if needed (optional)
+        # You could customize transforms per dataset type if needed
         
-        # Convert back to PIL Image (single channel)
-        return Image.fromarray(enhanced_green)
+        # Get the dataset
+        train_ds, val_ds = get_datasets(data_dir, transforms, train_ratio, task)
+        
+        if train_ds is not None and val_ds is not None:
+            # Extract the file dictionaries from the CacheDatasets
+            all_train_files.extend(train_ds.data)
+            all_val_files.extend(val_ds.data)
     
-    def __repr__(self):
-        return self.__class__.__name__ + f'(clip_limit={self.clip_limit}, tile_grid_size={self.tile_grid_size})'
+    if not all_train_files or not all_val_files:
+        print(f"{Fore.RED}Error: No valid datasets found!")
+        return None, None
+    
+    print(f"{Fore.GREEN}• Combined training samples: {Fore.YELLOW}{len(all_train_files)}")
+    print(f"{Fore.GREEN}• Combined validation samples: {Fore.YELLOW}{len(all_val_files)}")
+    
+    # Create new combined datasets
+    combined_train_ds = CacheDataset(data=all_train_files, transform=transforms["train"], cache_rate=1.0)
+    combined_val_ds = CacheDataset(data=all_val_files, transform=transforms["val"], cache_rate=1.0)
+    
+    return combined_train_ds, combined_val_ds
