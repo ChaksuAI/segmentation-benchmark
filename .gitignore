@@ -3,3 +3,5 @@ predictions/
 outputs/
 results/
 weights/
+models/__pycache__/
+utils/__pycache__/
