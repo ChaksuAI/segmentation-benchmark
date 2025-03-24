@@ -1,15 +1,18 @@
 from .unet import UNetModel
 from .swinunetr import SwinUNETRModel
 from .unetr import UNETRModel
+from .posal import POSALModel
 
-def get_model(name):
+def get_model(model_name, num_classes=3, pretrained=False, **kwargs):
+    """Returns the model."""
     models = {
         'unet': UNetModel,
         'swinunetr': SwinUNETRModel,
         'unetr': UNETRModel,
+        'posal': POSALModel,
     }
     
-    if name not in models:
-        raise ValueError(f"Model {name} not found. Available models: {list(models.keys())}")
+    if model_name not in models:
+        raise ValueError(f"Model {model_name} not found. Available models: {list(models.keys())}")
     
-    return models[name]
+    return models[model_name](num_classes=num_classes, pretrained=pretrained, **kwargs)
