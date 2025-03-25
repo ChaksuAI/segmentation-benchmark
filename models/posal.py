@@ -68,10 +68,11 @@ class ASPP(nn.Module):
             nn.LeakyReLU(0.2, inplace=True)
         )
         
+        # Modified pooling branch: Use GroupNorm instead of BatchNorm
         self.pool = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(in_channels, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(32, out_channels),  # Replace BatchNorm with GroupNorm
             nn.LeakyReLU(0.2, inplace=True)
         )
         
@@ -328,4 +329,6 @@ class POSALModel:
             POSAL model instance
         """
         model = POSAL(num_classes=self.out_channels)
+        # Make sure model is in proper state for both training and inference
+        model.train()
         return model
