@@ -2,6 +2,7 @@ from .unet import UNetModel
 from .swinunetr import SwinUNETRModel
 from .unetr import UNETRModel
 from .posal import POSALModel
+from .denet import DENetModel 
 
 def get_model(model_name, num_classes=3, pretrained=False, **kwargs):
     """Returns the model."""
@@ -10,6 +11,7 @@ def get_model(model_name, num_classes=3, pretrained=False, **kwargs):
         'swinunetr': SwinUNETRModel,
         'unetr': UNETRModel,
         'posal': POSALModel,
+        'denet': DENetModel,
     }
     
     if model_name not in models:
