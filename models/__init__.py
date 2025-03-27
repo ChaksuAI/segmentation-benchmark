@@ -3,8 +3,10 @@ from .swinunetr import SwinUNETRModel
 from .unetr import UNETRModel
 from .posal import POSALModel
 from .denet import DENetModel 
+from .saunet import SAUNetModel
+from .csnet import CSNetModel
 
-def get_model(model_name, num_classes=3, pretrained=False, **kwargs):
+def get_model(name):
     """Returns the model."""
     models = {
         'unet': UNetModel,
@@ -12,9 +14,11 @@ def get_model(model_name, num_classes=3, pretrained=False, **kwargs):
         'unetr': UNETRModel,
         'posal': POSALModel,
         'denet': DENetModel,
+        'saunet': SAUNetModel,
+        'csnet': CSNetModel,
     }
     
-    if model_name not in models:
-        raise ValueError(f"Model {model_name} not found. Available models: {list(models.keys())}")
+    if name not in models:
+        raise ValueError(f"Model {name} not found. Available models: {list(models.keys())}")
     
-    return models[model_name](num_classes=num_classes, pretrained=pretrained, **kwargs)
+    return models[name]
