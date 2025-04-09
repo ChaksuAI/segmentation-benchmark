@@ -39,3 +39,22 @@ python predict.py --model saunet --task odoc --device cuda:0 --model_path weight
 python predict.py --model saunet --task odoc --device cuda:0 --model_path weights/saunet_refuge,papila,fundoct,g1020,origa_latest/best_saunet_model.pth --datasets drishti
 python predict.py --model saunet --task odoc --device cuda:0 --model_path weights/saunet_refuge,papila,fundoct,drishti,origa_latest/best_saunet_model.pth --datasets g1020
 python predict.py --model saunet --task odoc --device cuda:0 --model_path weights/saunet_refuge,papila,fundoct,drishti,g1020_latest/best_saunet_model.pth --datasets origa
+
+python predict.py --model scsnet --task odoc --device cuda:0 --model_path weights/scsnet_refuge,fundoct,drishti,g1020,origa_latest/best_scsnet_model.pth --datasets papila
+python predict.py --model scsnet --task odoc --device cuda:0 --model_path weights/scsnet_refuge,papila,drishti,g1020,origa_latest/best_scsnet_model.pth --datasets fundoct
+python predict.py --model scsnet --task odoc --device cuda:0 --model_path weights/scsnet_refuge,papila,fundoct,g1020,origa_latest/best_scsnet_model.pth --datasets drishti
+python predict.py --model scsnet --task odoc --device cuda:0 --model_path weights/scsnet_refuge,papila,fundoct,drishti,origa_latest/best_scsnet_model.pth --datasets g1020
+python predict.py --model scsnet --task odoc --device cuda:0 --model_path weights/scsnet_refuge,papila,fundoct,drishti,g1020_latest/best_scsnet_model.pth --datasets origa
+
+
+python predict.py --model iternet --task odoc --device cuda:0 --model_path weights/iternet_refuge,fundoct,drishti,g1020,origa_latest/best_iternet_model.pth --datasets papila
+python predict.py --model iternet --task odoc --device cuda:0 --model_path weights/iternet_refuge,papila,drishti,g1020,origa_latest/best_iternet_model.pth --datasets fundoct
+python predict.py --model iternet --task odoc --device cuda:0 --model_path weights/iternet_refuge,papila,fundoct,g1020,origa_latest/best_iternet_model.pth --datasets drishti
+python predict.py --model iternet --task odoc --device cuda:0 --model_path weights/iternet_refuge,papila,fundoct,drishti,origa_latest/best_iternet_model.pth --datasets g1020
+python predict.py --model iternet --task odoc --device cuda:0 --model_path weights/iternet_refuge,papila,fundoct,drishti,g1020_latest/best_iternet_model.pth --datasets origa
+
+python predict.py --model bcdunet --task odoc --device cuda:0 --model_path weights/bcdunet_refuge,fundoct,drishti,g1020,origa_latest/best_bcdunet_model.pth --datasets papila
+python predict.py --model bcdunet --task odoc --device cuda:0 --model_path weights/bcdunet_refuge,papila,drishti,g1020,origa_latest/best_bcdunet_model.pth --datasets fundoct
+python predict.py --model bcdunet --task odoc --device cuda:0 --model_path weights/bcdunet_refuge,papila,fundoct,g1020,origa_latest/best_bcdunet_model.pth --datasets drishti
+python predict.py --model bcdunet --task odoc --device cuda:0 --model_path weights/bcdunet_refuge,papila,fundoct,drishti,origa_latest/best_bcdunet_model.pth --datasets g1020
+python predict.py --model bcdunet --task odoc --device cuda:0 --model_path weights/bcdunet_refuge,papila,fundoct,drishti,g1020_latest/best_bcdunet_model.pth --datasets origa

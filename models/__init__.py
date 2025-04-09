@@ -5,6 +5,10 @@ from .posal import POSALModel
 from .denet import DENetModel 
 from .saunet import SAUNetModel
 from .csnet import CSNetModel
+from .scsnet import SCSNetModel
+from .iternet import IterNetModel
+from .bcdunet import BCDUNetModel
+
 
 def get_model(name):
     """Returns the model."""
@@ -16,6 +20,9 @@ def get_model(name):
         'denet': DENetModel,
         'saunet': SAUNetModel,
         'csnet': CSNetModel,
+        'scsnet': SCSNetModel,
+        'iternet': IterNetModel,
+        'bcdunet': BCDUNetModel
     }
     
     if name not in models:

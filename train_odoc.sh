@@ -41,3 +41,21 @@ python train.py --datasets refuge,papila,drishti,g1020,origa --model denet --tas
 python train.py --datasets refuge,papila,fundoct,g1020,origa --model denet --task odoc --device cuda:0 --batch_size 16
 python train.py --datasets refuge,papila,fundoct,drishti,origa --model denet --task odoc --device cuda:0 --batch_size 16
 python train.py --datasets refuge,papila,fundoct,drishti,g1020 --model denet --task odoc --device cuda:0 --batch_size 16
+
+python train.py --datasets refuge,fundoct,drishti,g1020,origa --model scsnet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,drishti,g1020,origa --model scsnet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,g1020,origa --model scsnet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,drishti,origa --model scsnet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,drishti,g1020 --model scsnet --task odoc --device cuda:0 --batch_size 16
+
+python train.py --datasets refuge,fundoct,drishti,g1020,origa --model iternet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,drishti,g1020,origa --model iternet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,g1020,origa --model iternet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,drishti,origa --model iternet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,drishti,g1020 --model iternet --task odoc --device cuda:0 --batch_size 16
+
+python train.py --datasets refuge,fundoct,drishti,g1020,origa --model bcdunet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,drishti,g1020,origa --model bcdunet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,g1020,origa --model bcdunet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,drishti,origa --model bcdunet --task odoc --device cuda:0 --batch_size 16
+python train.py --datasets refuge,papila,fundoct,drishti,g1020 --model bcdunet --task odoc --device cuda:0 --batch_size 16

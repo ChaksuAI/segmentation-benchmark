@@ -14,6 +14,7 @@ class DENetSegmentation(nn.Module):
         super(DENetSegmentation, self).__init__()
         self.use_side_outputs = use_side_outputs
         self.features = features  # Store features as an instance attribute
+        self.out_channels = out_channels  # Store out_channels as instance attribute
         
         # Encoder path
         self.encoder_blocks = nn.ModuleList()
@@ -202,8 +203,14 @@ class DENetSegmentation(nn.Module):
         od_ensemble = torch.clamp(od_ensemble, 0.0, 10.0)  
         oc_ensemble = torch.clamp(oc_ensemble, 0.0, 10.0)
 
-        # Stack the channels together with background first
-        output = torch.cat([background, od_ensemble, oc_ensemble], dim=1)
+        # Adapt output based on task (vessel segmentation vs. ODOC segmentation)
+        if self.out_channels == 1:  # Binary vessel segmentation
+            # For vessel segmentation, use only one of the outputs (od_ensemble)
+            # Stack the channels together with background first
+            output = torch.cat([1.0 - od_ensemble, od_ensemble], dim=1)
+        else:  # Original ODOC segmentation
+            # Stack the channels together with background first
+            output = torch.cat([background, od_ensemble, oc_ensemble], dim=1)
 
         # Apply log-softmax to create proper logits
         # This helps stabilize the predictions and makes argmax work correctly
@@ -276,13 +283,15 @@ class DENetModel:
         Returns:
             A configured DENet model
         """
-        # For ODOC task, the num_classes is typically 3 (background, OD, OC)
-        # But our model uses separate channels for OD and OC
-        # So we need to convert num_classes to the correct out_channels
-        
+        # For vessel segmentation task, we need to adapt the output channels
+        if self.num_classes == 2:  # Binary vessel segmentation
+            actual_out_channels = 1  # Only need one output channel for binary task
+        else:
+            actual_out_channels = self.out_channels
+            
         return DENetSegmentation(
             in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            out_channels=actual_out_channels,
             features=self.features
         )
     
@@ -314,3 +323,5 @@ class DENetModel:
         
         # Return a new DENetModel instance
         return DENetModel(**params)
+
+model = DENetModel(num_classes=2)  # Binary segmentation

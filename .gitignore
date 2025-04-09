@@ -1,7 +1,5 @@
 data/
-predictions/
 outputs/
 results/
 weights/
-models/__pycache__/
-utils/__pycache__/
+__pycache__/
