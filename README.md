@@ -41,35 +41,6 @@ A flexible and extensible framework for benchmarking different segmentation mode
 └── predict_vessel.sh                         # Vessel prediction script
 ```
 
-## Features
-
-- Multiple segmentation models:
-  - UNet with configurable backbone
-  - SwinUNETR with vision transformer
-  - UNETR for transformers-based segmentation
-- Advanced loss functions:
-  - Dice Loss
-  - Combined BCE-Dice Loss
-  - Focal Loss
-  - IoU Loss
-  - DIoU Loss
-- Comprehensive evaluation metrics:
-  - Dice coefficient
-  - Intersection over Union (IoU)
-  - Accuracy (ACC)
-  - Area Under the Curve (AUC)
-- Rich visualization features:
-  - Colorized overlays (orange/red for ODOC, blue for vessels)
-  - Training curves for loss and metrics
-  - Progress bars with real-time metrics
-- Support for both tasks:
-  - ODOC (Optic Disc and Cup Segmentation)
-  - Vessel Segmentation
-- Modular and extensible design
-- Automatic dataset detection
-- Command-line interface with extensive options
-- Efficient data loading and processing
-
 ## Installation
 
 ```bash
@@ -111,14 +82,14 @@ For vessel segmentation:
 ```bash
 python train.py \
     --task odoc \                    # or 'vessel'
-    --model unet \                   # unet, swinunetr, unetr
+    --model unet \                   # unet, unetr, swinunetr, etc.
     --dataset drishti \              # dataset name in data/
     --batch_size 8 \
     --val_batch_size 4 \
     --epochs 100 \
     --lr 3e-4 \
-    --loss dicece \                  # dice, dicece, focal, iou
-    --metric dice \                  # dice, iou
+    --loss dicece \                  
+    --metric dice \                  
     --image_size 512 \
     --device cuda:0 \
     --seed 42
@@ -154,7 +125,7 @@ data/
 │           └── ...
 ```
 
-- Images: RGB format in common formats (png, jpg)
+- Images: RGB format in common formats
 - ODOC masks: 8-bit grayscale with:
   - 255 (white) = background
   - 128 (gray) = optic disc
@@ -162,24 +133,3 @@ data/
 - Vessel masks: Binary with:
   - 255 (white) = background
   - 0 (black) = vessel
-
-
-## Advanced Features
-
-### Visualization
-- Real-time training progress with colorized metrics
-- Automatic overlay generation for predictions
-- Training curves showing loss and metrics
-- TensorBoard integration for detailed monitoring
-
-### Model Management
-- Automatic checkpoint saving
-- Best model tracking
-- Easy model loading with fallbacks
-- Symlinks to latest weights
-
-### Evaluation
-- Comprehensive metrics for both tasks
-- Per-class metrics calculation
-- Support for multiple ground truth formats
-- Detailed evaluation reports
