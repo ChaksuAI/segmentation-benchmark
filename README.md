@@ -22,7 +22,8 @@ A flexible and extensible framework for benchmarking different segmentation mode
 │   ├── __init__.py                           # Model registry and factory functions
 │   ├── unet.py                               # UNet implementation
 │   ├── swinunetr.py                          # SwinUNETR implementation
-│   └── unetr.py                              # UNETR implementation
+│   ├── unetr.py                              # UNETR implementation
+│   └── ...                                   # Other models
 ├── utils/
 │   ├── __init__.py                           # Utility exports
 │   ├── cli.py                                # Command line interface utilities
